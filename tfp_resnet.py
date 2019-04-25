@@ -91,6 +91,23 @@ def get_kernel_posterior_fn(kernel_posterior_scale_mean=-9.0,
     return kernel_posterior_fn
 
 
+def get_kernel_divergence_fn(train_size, w=1.0):
+    """
+    Get the kernel Kullback-Leibler divergence function
+
+    # Arguments
+        train_size (int): size of the training dataset for normalization
+        w (float): weight to the function
+
+    # Returns
+        kernel_divergence_fn: kernel Kullback-Leibler divergence function
+    """
+    def kernel_divergence_fn(q, p, _):  # need the third ignorable argument
+        kernel_divergence = tfp.distributions.kl_divergence(q, p) / tf.cast(train_size, tf.float32)
+        return w * kernel_divergence
+    return kernel_divergence_fn
+
+
 def get_neg_log_likelihood_fn(bayesian=False):
     """
     Get the negative log-likelihood function
@@ -121,12 +138,20 @@ def get_categorical_accuracy_fn(y_true, y_pred):
     return acc
 
 
-class KLLossMonitor(tf.keras.callbacks.Callback):
+class KLLossScheduler(tf.keras.callbacks.Callback):
+    def on_epoch_begin(self, epoch, logs=None):
+        kl_weight = np.minimum((epoch + 1) * 0.1, 1.0)
+        print('Epoch: {}, KL Divergence Loss weight = {:.2f}'.format(epoch+1, kl_weight))
+        for l in self.model.layers:
+            for id_w, w in enumerate(l.weights):
+                if 'kl_loss_weight' in w.name:
+                    l_weights = l.get_weights()
+                    l.set_weights([*l_weights[:id_w], kl_weight, *l_weights[id_w+1:]])
     def on_epoch_end(self, epoch, logs={}):
         print('KL Divergence Loss = {:.4f}'.format(sum(self.model.losses).eval(session=tf.keras.backend.get_session())))
 
 
-def resnet_layer(inputs,
+def resnet_layer(inputs, train_size,
                  n_filter=16,
                  kernel_size=3,
                  strides=1,
@@ -156,7 +181,9 @@ def resnet_layer(inputs,
                                                strides=strides,
                                                padding='same',
                                                kernel_posterior_fn=get_kernel_posterior_fn(),
-                                               kernel_divergence_fn=lambda q, p, _: tfp.distributions.kl_divergence(q, p) / tf.cast(len(x_train), tf.float32))
+                                               kernel_divergence_fn=None)
+        w = conv.add_weight(name=conv.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
+        conv.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
     else:
         conv = keras.layers.Conv2D(n_filter,
                                    kernel_size=kernel_size,
@@ -180,7 +207,7 @@ def resnet_layer(inputs,
     return x
 
 
-def resnet_v1(input_shape, n_res_block, n_class=10, bayesian=False):
+def resnet_v1(input_shape, n_res_block, train_size, n_class=10, bayesian=False):
     """ResNet Version 1 Model builder [a]
 
     Stacks of 2 x (3 x 3) Conv2D-BN-ReLU
@@ -212,25 +239,25 @@ def resnet_v1(input_shape, n_res_block, n_class=10, bayesian=False):
     n_filter = 16
 
     inputs = keras.layers.Input(shape=input_shape)
-    x = resnet_layer(inputs=inputs, bayesian=bayesian)
+    x = resnet_layer(inputs=inputs, train_size=train_size, bayesian=bayesian)
     # Instantiate the stack of residual units
     for stack in range(3):
         for res_block in range(n_res_block):
             strides = 1
             if stack > 0 and res_block == 0:  # first layer but not first stack
                 strides = 2  # downsample
-            y = resnet_layer(inputs=x,
+            y = resnet_layer(inputs=x, train_size=train_size,
                              n_filter=n_filter,
                              strides=strides,
                              bayesian=bayesian)
-            y = resnet_layer(inputs=y,
+            y = resnet_layer(inputs=y, train_size=train_size,
                              n_filter=n_filter,
                              activation=None,
                              bayesian=bayesian)
             if stack > 0 and res_block == 0:  # first layer but not first stack
                 # linear projection residual shortcut connection to match
                 # changed dims
-                x = resnet_layer(inputs=x,
+                x = resnet_layer(inputs=x, train_size=train_size,
                                  n_filter=n_filter,
                                  kernel_size=1,
                                  strides=strides,
@@ -247,10 +274,13 @@ def resnet_v1(input_shape, n_res_block, n_class=10, bayesian=False):
     y = keras.layers.Flatten()(x)
     if bayesian:
         # scale the KL divergence function to avoid the loss function being over-regularized
-        logits = tfp.layers.DenseFlipout(n_class,
-                                         activation=None,
-                                         kernel_posterior_fn=get_kernel_posterior_fn(),
-                                         kernel_divergence_fn=lambda q, p, _: tfp.distributions.kl_divergence(q, p) / tf.cast(len(x_train), tf.float32))(y)
+        dense = tfp.layers.DenseFlipout(n_class,
+                                        activation=None,
+                                        kernel_posterior_fn=get_kernel_posterior_fn(),
+                                        kernel_divergence_fn=None)
+        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
+        dense.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
+        logits = dense(y)
     else:
         logits = keras.layers.Dense(n_class,
                                     activation=None,
@@ -261,7 +291,7 @@ def resnet_v1(input_shape, n_res_block, n_class=10, bayesian=False):
     return model
 
 
-def resnet_v2(input_shape, n_res_block, n_class=10, bayesian=False):
+def resnet_v2(input_shape, n_res_block, train_size, n_class=10, bayesian=False):
     """ResNet Version 2 Model builder [b]
 
     Stacks of (1 x 1)-(3 x 3)-(1 x 1) BN-ReLU-Conv2D or also known as
@@ -291,7 +321,7 @@ def resnet_v2(input_shape, n_res_block, n_class=10, bayesian=False):
 
     inputs = keras.layers.Input(shape=input_shape)
     # v2 performs Conv2D with BN-ReLU on input before splitting into 2 paths
-    x = resnet_layer(inputs=inputs,
+    x = resnet_layer(inputs=inputs, train_size=train_size,
                      n_filter=n_filter_in,
                      conv_first=True,
                      bayesian=bayesian)
@@ -313,7 +343,7 @@ def resnet_v2(input_shape, n_res_block, n_class=10, bayesian=False):
                     strides = 2  # downsample
 
             # bottleneck residual unit
-            y = resnet_layer(inputs=x,
+            y = resnet_layer(inputs=x, train_size=train_size,
                              n_filter=n_filter_in,
                              kernel_size=1,
                              strides=strides,
@@ -321,11 +351,11 @@ def resnet_v2(input_shape, n_res_block, n_class=10, bayesian=False):
                              batch_normalization=batch_normalization,
                              conv_first=False,
                              bayesian=bayesian)
-            y = resnet_layer(inputs=y,
+            y = resnet_layer(inputs=y, train_size=train_size,
                              n_filter=n_filter_in,
                              conv_first=False,
                              bayesian=bayesian)
-            y = resnet_layer(inputs=y,
+            y = resnet_layer(inputs=y, train_size=train_size,
                              n_filter=n_filter_out,
                              kernel_size=1,
                              conv_first=False,
@@ -333,7 +363,7 @@ def resnet_v2(input_shape, n_res_block, n_class=10, bayesian=False):
             if res_block == 0:
                 # linear projection residual shortcut connection to match
                 # changed dims
-                x = resnet_layer(inputs=x,
+                x = resnet_layer(inputs=x, train_size=train_size,
                                  n_filter=n_filter_out,
                                  kernel_size=1,
                                  strides=strides,
@@ -352,10 +382,13 @@ def resnet_v2(input_shape, n_res_block, n_class=10, bayesian=False):
     y = keras.layers.Flatten()(x)
     if bayesian:
         # scale the KL divergence function to avoid the loss function being over-regularized
-        logits = tfp.layers.DenseFlipout(n_class,
-                                         activation=None,
-                                         kernel_posterior_fn=get_kernel_posterior_fn(),
-                                         kernel_divergence_fn=lambda q, p, _: tfp.distributions.kl_divergence(q, p) / tf.cast(len(x_train), tf.float32))(y)
+        dense = tfp.layers.DenseFlipout(n_class,
+                                        activation=None,
+                                        kernel_posterior_fn=get_kernel_posterior_fn(),
+                                        kernel_divergence_fn=None)
+        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
+        dense.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
+        logits = dense(y)
     else:
         logits = keras.layers.Dense(n_class,
                                     activation=None,
@@ -427,10 +460,12 @@ if __name__ == '__main__':
     if version == 1:
         model = resnet_v1(input_shape=input_shape,
                           n_res_block=n_res_block,
+                          train_size=len(x_train),
                           bayesian=bayesian)
     else:
         model = resnet_v2(input_shape=input_shape,
                           n_res_block=n_res_block,
+                          train_size=len(x_train),
                           bayesian=bayesian)
 
     model.compile(loss=get_neg_log_likelihood_fn(bayesian=bayesian),
@@ -467,8 +502,8 @@ if __name__ == '__main__':
 
     callbacks = [checkpoint, lr_reducer, lr_scheduler]
     if bayesian:
-        kl_loss_monitor = KLLossMonitor()
-        callbacks += [kl_loss_monitor]
+        kl_loss_scheduler = KLLossScheduler()
+        callbacks += [kl_loss_scheduler]
 
     # Run training, with or without data augmentation.
     if not os.path.isfile(model_filepath):

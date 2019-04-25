@@ -442,7 +442,7 @@ if __name__ == '__main__':
     # Prepare model model saving directory.
     save_dir = os.path.join(os.getcwd(), 'saved_models')
     model_vis_name = 'cifar10_%s_model.pdf' % model_type
-    model_name = 'cifar10_%s_model.hdf' % model_type
+    model_name = 'cifar10_%s_model.h5' % model_type
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
     model_vis_filepath = os.path.join(save_dir, model_vis_name)
@@ -455,7 +455,8 @@ if __name__ == '__main__':
     checkpoint = keras.callbacks.ModelCheckpoint(filepath=model_filepath,
                                                  monitor='val_get_categorical_accuracy_fn',
                                                  verbose=1,
-                                                 save_best_only=True)
+                                                 save_best_only=True,
+                                                 save_weights_only=True)
 
     lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule)
 

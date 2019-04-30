@@ -139,14 +139,34 @@ def get_categorical_accuracy_fn(y_true, y_pred):
 
 
 class KLLossScheduler(tf.keras.callbacks.Callback):
+    def __init__(self, update_per_batch=False, verbose=0):
+        self.update_per_batch = update_per_batch
+        self.verbose = verbose
+        self.annealing_factor = 50
+    def on_batch_begin(self, batch, logs=None):
+        if self.update_per_batch:
+            idx_total_batch = self.idx_epoch * int(np.ceil(self.params['samples'] / self.params['batch_size'])) + batch
+            kl_weight = (idx_total_batch / self.annealing_factor) / (self.params['samples'] / self.params['batch_size'])
+            kl_weight = np.minimum(kl_weight, 1.0)
+            if self.verbose > 0:
+                print('Batch: {}, KL Divergence Loss weight = {:.2f}'.format(batch+1, kl_weight))
+            for l in self.model.layers:
+                for id_w, w in enumerate(l.weights):
+                    if 'kl_loss_weight' in w.name:
+                        l_weights = l.get_weights()
+                        l.set_weights([*l_weights[:id_w], kl_weight, *l_weights[id_w+1:]])
     def on_epoch_begin(self, epoch, logs=None):
-        kl_weight = np.minimum((epoch + 1) * 0.1, 1.0)
-        print('Epoch: {}, KL Divergence Loss weight = {:.2f}'.format(epoch+1, kl_weight))
-        for l in self.model.layers:
-            for id_w, w in enumerate(l.weights):
-                if 'kl_loss_weight' in w.name:
-                    l_weights = l.get_weights()
-                    l.set_weights([*l_weights[:id_w], kl_weight, *l_weights[id_w+1:]])
+        self.idx_epoch = epoch
+        if not self.update_per_batch:
+            kl_weight = (epoch + 1) / self.annealing_factor
+            kl_weight = np.minimum(kl_weight, 1.0)
+            if self.verbose > 0:
+                print('Epoch: {}, KL Divergence Loss weight = {:.2f}'.format(epoch+1, kl_weight))
+            for l in self.model.layers:
+                for id_w, w in enumerate(l.weights):
+                    if 'kl_loss_weight' in w.name:
+                        l_weights = l.get_weights()
+                        l.set_weights([*l_weights[:id_w], kl_weight, *l_weights[id_w+1:]])
     def on_epoch_end(self, epoch, logs={}):
         print('KL Divergence Loss = {:.4f}'.format(sum(self.model.losses).eval(session=tf.keras.backend.get_session())))
 
@@ -182,7 +202,7 @@ def resnet_layer(inputs, train_size,
                                                padding='same',
                                                kernel_posterior_fn=get_kernel_posterior_fn(),
                                                kernel_divergence_fn=None)
-        w = conv.add_weight(name=conv.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
+        w = conv.add_weight(name=conv.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(1.0), trainable=False)
         conv.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
     else:
         conv = keras.layers.Conv2D(n_filter,
@@ -278,7 +298,7 @@ def resnet_v1(input_shape, n_res_block, train_size, n_class=10, bayesian=False):
                                         activation=None,
                                         kernel_posterior_fn=get_kernel_posterior_fn(),
                                         kernel_divergence_fn=None)
-        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
+        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(1.0), trainable=False)
         dense.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
         logits = dense(y)
     else:
@@ -386,7 +406,7 @@ def resnet_v2(input_shape, n_res_block, train_size, n_class=10, bayesian=False):
                                         activation=None,
                                         kernel_posterior_fn=get_kernel_posterior_fn(),
                                         kernel_divergence_fn=None)
-        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
+        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(1.0), trainable=False)
         dense.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
         logits = dense(y)
     else:
@@ -502,7 +522,7 @@ if __name__ == '__main__':
 
     callbacks = [checkpoint, lr_reducer, lr_scheduler]
     if bayesian:
-        kl_loss_scheduler = KLLossScheduler()
+        kl_loss_scheduler = KLLossScheduler(update_per_batch=True)
         callbacks += [kl_loss_scheduler]
 
     # Run training, with or without data augmentation.

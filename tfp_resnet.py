@@ -138,15 +138,18 @@ def get_categorical_accuracy_fn(y_true, y_pred):
 
 
 class KLLossScheduler(tf.keras.callbacks.Callback):
-    def __init__(self, update_per_batch=False, annealing_factor=50, verbose=0):
+    def __init__(self, update_per_batch=False, n_silent_epoch=5, n_annealing_epoch=50, verbose=0):
         self.update_per_batch = update_per_batch
-        self.annealing_factor = annealing_factor
+        self.n_silent_epoch = n_silent_epoch
+        self.n_annealing_epoch = n_annealing_epoch
         self.verbose = verbose
+        super(KLLossScheduler, self).__init__()
     def on_batch_begin(self, batch, logs=None):
         if self.update_per_batch:
-            idx_total_batch = self.epoch * int(np.ceil(self.params['samples'] / self.params['batch_size'])) + batch
-            kl_weight = (idx_total_batch / self.annealing_factor) / (self.params['samples'] / self.params['batch_size'])
-            kl_weight = np.minimum(kl_weight, 1.0)
+            n_batch_per_epoch = int(np.ceil(self.params['samples'] / self.params['batch_size']))
+            idx_total_batch = (self.epoch - self.n_silent_epoch) * n_batch_per_epoch + batch + 1
+            kl_weight = (idx_total_batch / n_batch_per_epoch) / self.n_annealing_epoch
+            kl_weight = np.maximum(0.0, np.minimum(kl_weight, 1.0))
             self.kl_weight = kl_weight
             if self.verbose > 0:
                 print('\nBatch: {}, KL Divergence Loss Weight = {:.6f}'.format(batch+1, kl_weight))
@@ -158,8 +161,8 @@ class KLLossScheduler(tf.keras.callbacks.Callback):
     def on_epoch_begin(self, epoch, logs=None):
         self.epoch = epoch
         if not self.update_per_batch:
-            kl_weight = (epoch + 1) / self.annealing_factor
-            kl_weight = np.minimum(kl_weight, 1.0)
+            kl_weight = (epoch - self.n_silent_epoch + 1) / self.n_annealing_epoch
+            kl_weight = np.maximum(0.0, np.minimum(kl_weight, 1.0))
             self.kl_weight = kl_weight
             if self.verbose > 0:
                 print('\nEpoch: {}, KL Divergence Loss Weight = {:.6f}'.format(epoch+1, kl_weight))
@@ -204,7 +207,7 @@ def resnet_layer(inputs, train_size,
                                                padding='same',
                                                kernel_posterior_fn=get_kernel_posterior_fn(),
                                                kernel_divergence_fn=None)
-        w = conv.add_weight(name=conv.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(1.0), trainable=False)
+        w = conv.add_weight(name=conv.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
         conv.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
     else:
         conv = keras.layers.Conv2D(n_filter,
@@ -300,7 +303,7 @@ def resnet_v1(input_shape, n_res_block, train_size, n_class=10, bayesian=False):
                                         activation=None,
                                         kernel_posterior_fn=get_kernel_posterior_fn(),
                                         kernel_divergence_fn=None)
-        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(1.0), trainable=False)
+        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
         dense.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
         logits = dense(y)
     else:
@@ -408,7 +411,7 @@ def resnet_v2(input_shape, n_res_block, train_size, n_class=10, bayesian=False):
                                         activation=None,
                                         kernel_posterior_fn=get_kernel_posterior_fn(),
                                         kernel_divergence_fn=None)
-        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(1.0), trainable=False)
+        w = dense.add_weight(name=dense.name+'/kl_loss_weight', shape=(), initializer=tf.initializers.constant(0.0), trainable=False)
         dense.kernel_divergence_fn = get_kernel_divergence_fn(train_size, w)
         logits = dense(y)
     else:

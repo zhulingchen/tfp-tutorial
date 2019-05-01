@@ -80,11 +80,10 @@ def get_kernel_posterior_fn(kernel_posterior_scale_mean=-9.0,
     """
 
     def _untransformed_scale_constraint(t):
-        return tf.clip_by_value(t, -1000,
-                                tf.math.log(kernel_posterior_scale_constraint))
+        return tf.clip_by_value(t, -1000, tf.math.log(kernel_posterior_scale_constraint))
 
     kernel_posterior_fn = tfp.layers.default_mean_field_normal_fn(
-        untransformed_scale_initializer=tf.compat.v1.initializers.random_normal(
+        untransformed_scale_initializer=tf.random_normal_initializer(
             mean=kernel_posterior_scale_mean,
             stddev=kernel_posterior_scale_stddev),
         untransformed_scale_constraint=_untransformed_scale_constraint)
@@ -139,36 +138,39 @@ def get_categorical_accuracy_fn(y_true, y_pred):
 
 
 class KLLossScheduler(tf.keras.callbacks.Callback):
-    def __init__(self, update_per_batch=False, verbose=0):
+    def __init__(self, update_per_batch=False, annealing_factor=50, verbose=0):
         self.update_per_batch = update_per_batch
+        self.annealing_factor = annealing_factor
         self.verbose = verbose
-        self.annealing_factor = 50
     def on_batch_begin(self, batch, logs=None):
         if self.update_per_batch:
-            idx_total_batch = self.idx_epoch * int(np.ceil(self.params['samples'] / self.params['batch_size'])) + batch
+            idx_total_batch = self.epoch * int(np.ceil(self.params['samples'] / self.params['batch_size'])) + batch
             kl_weight = (idx_total_batch / self.annealing_factor) / (self.params['samples'] / self.params['batch_size'])
             kl_weight = np.minimum(kl_weight, 1.0)
+            self.kl_weight = kl_weight
             if self.verbose > 0:
-                print('Batch: {}, KL Divergence Loss weight = {:.2f}'.format(batch+1, kl_weight))
+                print('\nBatch: {}, KL Divergence Loss Weight = {:.6f}'.format(batch+1, kl_weight))
             for l in self.model.layers:
                 for id_w, w in enumerate(l.weights):
                     if 'kl_loss_weight' in w.name:
                         l_weights = l.get_weights()
                         l.set_weights([*l_weights[:id_w], kl_weight, *l_weights[id_w+1:]])
     def on_epoch_begin(self, epoch, logs=None):
-        self.idx_epoch = epoch
+        self.epoch = epoch
         if not self.update_per_batch:
             kl_weight = (epoch + 1) / self.annealing_factor
             kl_weight = np.minimum(kl_weight, 1.0)
+            self.kl_weight = kl_weight
             if self.verbose > 0:
-                print('Epoch: {}, KL Divergence Loss weight = {:.2f}'.format(epoch+1, kl_weight))
+                print('\nEpoch: {}, KL Divergence Loss Weight = {:.6f}'.format(epoch+1, kl_weight))
             for l in self.model.layers:
                 for id_w, w in enumerate(l.weights):
                     if 'kl_loss_weight' in w.name:
                         l_weights = l.get_weights()
                         l.set_weights([*l_weights[:id_w], kl_weight, *l_weights[id_w+1:]])
     def on_epoch_end(self, epoch, logs={}):
-        print('KL Divergence Loss = {:.4f}'.format(sum(self.model.losses).eval(session=tf.keras.backend.get_session())))
+        print('KL Divergence Weight = {:.6f}, KL Divergence Loss = {:.4f}'.format(self.kl_weight,
+                                                                                  sum(self.model.losses).eval(session=tf.keras.backend.get_session())))
 
 
 def resnet_layer(inputs, train_size,

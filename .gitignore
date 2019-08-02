@@ -1,3 +1,4 @@
-saved_model
+saved_model/
+.ipynb_checkpoints/
 *.pdf
 *.h5

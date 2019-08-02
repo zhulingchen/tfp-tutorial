@@ -28,8 +28,6 @@ import tensorflow_probability as tfp
 import os
 os.environ['KERAS_BACKEND'] = 'tensorflow'  # set up tensorflow backend for keras
 import keras
-from keras.utils import plot_model
-from keras.datasets import cifar10
 import numpy as np
 
 
@@ -458,7 +456,7 @@ if __name__ == '__main__':
         model_type += '_Bayesian'
 
     # Load the CIFAR10 data.
-    (x_train, y_train), (x_test, y_test) = cifar10.load_data()
+    (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
 
     # Input image dimensions.
     input_shape = x_train.shape[1:]
@@ -501,7 +499,7 @@ if __name__ == '__main__':
 
     # Prepare model model saving directory.
     save_dir = os.path.join(os.getcwd(), 'saved_models')
-    model_vis_name = 'cifar10_%s_model.pdf' % model_type
+    model_vis_name = 'cifar10_%s_model.png' % model_type
     model_name = 'cifar10_%s_model.h5' % model_type
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
@@ -509,7 +507,7 @@ if __name__ == '__main__':
     model_filepath = os.path.join(save_dir, model_name)
 
     # Plot the model
-    plot_model(model, to_file=model_vis_filepath, show_shapes=True)
+    keras.utils.plot_model(model, to_file=model_vis_filepath, show_shapes=True)
 
     # Prepare callbacks for model saving and for learning rate adjustment.
     checkpoint = keras.callbacks.ModelCheckpoint(filepath=model_filepath,

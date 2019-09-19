@@ -4,7 +4,7 @@ My own implementations of some examples using TensorFlow Probability for tutoria
 ## Tutorials
 
 * [Bayesian Neural Networks](tfp_bnn.ipynb)
-* [Bayesian Gaussian Mixture Model](tfp_bgmm.ipynb)
+* [Bayesian Gaussian Mixture Model (MultivariateNormalDiag)](tfp_bgmm_MultivariateNormalDiag.ipynb)
 * [ResNet](tfp_resnet.py)
 
 ## References
